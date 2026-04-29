@@ -359,6 +359,10 @@ function DashBoard() {
         if (successPhase === 'applied' || successPhase === 'completed') {
           setUpdateAvailable(false);
         }
+
+        if (endpoint === '/revertUpdate') {
+          window.location.reload();
+        }
       })
       .catch(() => {
         setUpdatePhase(failurePhase);

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../../api';
 import ThemeToggle from '../../components/ThemeToggle';
@@ -19,6 +19,9 @@ import EmployeeFilters from './components/EmployeeFilters';
 import './DashBoard.css';
 
 const API = '/api';
+const RESTART_POLL_INTERVAL_MS = 2000;
+const RESTART_POLL_START_DELAY_MS = 4000;
+const RESTART_POLL_TIMEOUT_MS = 120000;
 
 function DashBoard() {
   const navigate = useNavigate();
@@ -61,6 +64,62 @@ function DashBoard() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [revertAvailable, setRevertAvailable] = useState(false);
   const [updatePhase, setUpdatePhase] = useState('idle');
+  const restartMonitorRef = useRef({ timeoutId: null, deadline: 0, sawDowntime: false });
+
+  function stopRestartMonitor() {
+    if (restartMonitorRef.current.timeoutId !== null) {
+      window.clearTimeout(restartMonitorRef.current.timeoutId);
+    }
+
+    restartMonitorRef.current = {
+      timeoutId: null,
+      deadline: 0,
+      sawDowntime: false,
+    };
+  }
+
+  function startRestartMonitor(onTimeoutPhase = 'idle') {
+    stopRestartMonitor();
+
+    restartMonitorRef.current.deadline = Date.now() + RESTART_POLL_TIMEOUT_MS;
+
+    const pollServer = () => {
+      if (Date.now() >= restartMonitorRef.current.deadline) {
+        stopRestartMonitor();
+        setUpdatePhase(onTimeoutPhase);
+        return;
+      }
+
+      apiFetch(API + '/isupdateAvailable', {
+        credentials: 'include',
+        cache: 'no-store',
+      })
+        .then(() => {
+          if (restartMonitorRef.current.sawDowntime) {
+            stopRestartMonitor();
+            window.location.reload();
+            return;
+          }
+
+          restartMonitorRef.current.timeoutId = window.setTimeout(
+            pollServer,
+            RESTART_POLL_INTERVAL_MS
+          );
+        })
+        .catch(() => {
+          restartMonitorRef.current.sawDowntime = true;
+          restartMonitorRef.current.timeoutId = window.setTimeout(
+            pollServer,
+            RESTART_POLL_INTERVAL_MS
+          );
+        });
+    };
+
+    restartMonitorRef.current.timeoutId = window.setTimeout(
+      pollServer,
+      RESTART_POLL_START_DELAY_MS
+    );
+  }
 
   function loadEmployeeList(searchValue = employeeSearch, statusValue = employeeStatus, departmentValue = employeeDepartment, sortByValue = employeeSortBy, sortOrderValue = employeeSortOrder) {
     const params = new URLSearchParams();
@@ -354,14 +413,17 @@ function DashBoard() {
           throw new Error(payload?.message || 'Request failed.');
         }
 
+        if (endpoint === '/revertUpdate') {
+          setUpdateAvailable(false);
+          setRevertAvailable(false);
+          startRestartMonitor('idle');
+          return;
+        }
+
         setUpdatePhase(successPhase);
 
         if (successPhase === 'applied' || successPhase === 'completed') {
           setUpdateAvailable(false);
-        }
-
-        if (endpoint === '/revertUpdate') {
-          window.location.reload();
         }
       })
       .catch(() => {
@@ -508,6 +570,12 @@ function DashBoard() {
       window.clearInterval(intervalId);
     };
   }, [updatePhase]);
+
+  useEffect(() => {
+    return () => {
+      stopRestartMonitor();
+    };
+  }, []);
 
   const activeEmployees = employees.filter((employee) => employee.status === 'Active').length;
   const inactiveEmployees = employees.filter((employee) => employee.status === 'Inactive').length;
